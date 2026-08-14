@@ -55,6 +55,7 @@ import os
 import statistics
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 LAB_ROOT = Path(__file__).resolve().parent.parent
@@ -128,6 +129,11 @@ def build_middleware(spec: str):
 def build_model(kind: str, corpus: Corpus, seed: int, timeout: float):
     if kind == "mock":
         return MockModel(corpus=corpus, seed=seed)
+    # Một số endpoint OpenAI-compatible (đặc biệt Groq) chặn user-agent
+    # mặc định ``Python-urllib/*`` bằng HTTP 403 dù key/model hợp lệ.
+    opener = urllib.request.build_opener()
+    opener.addheaders = [("User-Agent", "AgentArena/1.0")]
+    urllib.request.install_opener(opener)
     try:
         return RealModel.from_env(timeout=timeout)
     except RealModelError as exc:
@@ -214,6 +220,7 @@ def _diagnostic(result, corpus) -> dict:
         "model_final_truncated": False,
         "tool_failures": 0,
         "tool_failures_by_name": {},
+        "tool_history": [],
         "flaky_modes": {},
     }
 
@@ -272,6 +279,12 @@ def _diagnostic(result, corpus) -> dict:
                 continue
             if not isinstance(record, dict) or record.get("event") != "tool_call":
                 continue
+            item = {"name": record.get("name"), "ok": record.get("ok")}
+            for key in ("query", "k", "doc_id", "expression"):
+                if key in record:
+                    item[key] = record.get(key)
+            if len(diag["tool_history"]) < 32:
+                diag["tool_history"].append(item)
             mode = record.get("flaky_mode")
             if isinstance(mode, str) and mode and mode != "none":
                 diag["flaky_modes"][mode] = diag["flaky_modes"].get(mode, 0) + 1
@@ -308,6 +321,8 @@ def main(argv=None) -> int:
                         help="trần thời gian mỗi lần chạy")
     parser.add_argument("--max-tokens", type=int, default=None,
                         help="ngân sách output mỗi lần gọi model")
+    parser.add_argument("--delay-between-briefs", type=float, default=0.0,
+                        help="số giây nghỉ giữa các brief (hữu ích khi API giới hạn TPM)")
     parser.add_argument("--prompt-addendum", action="store_true",
                         help="thêm ràng buộc 'phải search trước khi abstain' vào system prompt")
     parser.add_argument("--out", default=str(DEFAULT_OUT), help="file điểm JSON")
@@ -336,9 +351,21 @@ def main(argv=None) -> int:
 
     _probe, layer_names = build_middleware(args.layers)
     del _probe  # a FRESH stack per brief; no state may leak between runs
+    prompt_config = {"prompt_addendum": args.prompt_addendum}
+    if args.model == "real" and args.prompt_addendum:
+        # Đường model thật cần phụ lục đầy đủ do student-owned harness cung
+        # cấp: search lại, fetch toàn văn, quote nguyên văn và JSON một dòng.
+        # Truyền qua RunnerConfig để provenance wrapper biết toàn bộ prompt.
+        from harness.agent import ARENA_SYSTEM_PROMPT_REAL
+
+        prompt_config = {
+            "system_prompt": ARENA_SYSTEM_PROMPT_REAL,
+            "prompt_addendum": False,
+        }
+
     config = RunnerConfig(
         flaky=not args.no_flaky,
-        prompt_addendum=args.prompt_addendum,
+        **prompt_config,
         **({"wall_clock_seconds": args.max_seconds} if args.max_seconds else {}),
         **({"max_tokens": args.max_tokens} if args.max_tokens else {}),
     )
@@ -354,6 +381,8 @@ def main(argv=None) -> int:
     rows = []
     results = []
     for index, brief in enumerate(briefs):
+        if index and args.delay_between_briefs > 0:
+            time.sleep(args.delay_between_briefs)
         seed = derive_seed(args.seed, index)
         layers, _ = build_middleware(args.layers)
         model = build_model(args.model, corpus, seed, timeout=60.0)

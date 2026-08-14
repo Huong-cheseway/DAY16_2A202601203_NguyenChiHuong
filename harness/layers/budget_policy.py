@@ -65,7 +65,7 @@ Xem `harness/middleware.py` để biết thứ tự các hook.
 from __future__ import annotations
 
 from arena.model import FINALIZE_SENTINEL
-from arena.tools import ToolResult  # noqa: F401  (dùng trong phần TODO)
+from arena.tools import ToolResult
 
 from harness.middleware import Middleware
 
@@ -73,8 +73,12 @@ from harness.middleware import Middleware
 DEFAULT_RESERVE = 1
 
 NUDGE = (
-    "Ngân sách công cụ đã hết. Hãy trả lời ngay bằng bằng chứng đang có, "
-    f"không gọi thêm công cụ nào nữa. {FINALIZE_SENTINEL}"
+    "Ngân sách công cụ đã hết, không gọi thêm công cụ. Trước khi kết luận, "
+    "hãy rà lại TOÀN BỘ quan sát từ fetch_doc theo từng dòng. Nếu có bất kỳ "
+    "dòng nào trả lời câu hỏi, phải chép NGUYÊN VẸN TOÀN BỘ dòng đó vào "
+    "claims, gắn đúng doc_id đã fetch, trả lời thẳng và đặt abstain=false. "
+    "Chỉ được abstain khi không một dòng đã đọc nào chứa căn cứ trả lời. "
+    f"Hãy xuất FINAL ngay. {FINALIZE_SENTINEL}"
 )
 
 
@@ -91,16 +95,15 @@ class BudgetPolicy(Middleware):
         return limit is not None and ctx.tools.calls >= limit - self.reserve
 
     def before_model(self, ctx, messages):
-        # TODO (§3): khoảng 4-6 dòng.
-        #  1. Nếu chưa cạn (`not self._spent(ctx)`) -> trả messages nguyên vẹn.
-        #  2. Ngược lại: trả về messages + [{"role": "user", "content": NUDGE}]
-        return messages  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        if not self._spent(ctx):
+            return messages
+        return messages + [{"role": "user", "content": NUDGE}]
 
     def wrap_tool_call(self, ctx, call, name, args):
-        # TODO (§3): khoảng 4-6 dòng.
-        #  1. Nếu chưa cạn -> `return call(name, args)` như bình thường.
-        #  2. Nếu đã cạn -> ĐỪNG gọi `call(...)`, trả về
-        #     ToolResult(ok=False, content="", error="<lý do>").
-        #     Không calling through chính là cách một lớp middleware
-        #     "chặn" một hành động — xem harness/middleware.py.
-        return call(name, args)  # <- mặc định KHÔNG LÀM GÌ
+        if not self._spent(ctx):
+            return call(name, args)
+        return ToolResult(
+            ok=False,
+            content="",
+            error="Ngân sách công cụ đã cạn; lượt gọi bị chặn.",
+        )

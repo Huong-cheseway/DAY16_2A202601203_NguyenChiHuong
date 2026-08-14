@@ -73,14 +73,47 @@ from __future__ import annotations
 from harness.middleware import Middleware
 
 
+_ABSENCE_MARKERS = (
+    "chưa được đồng bộ",
+    "chưa có dữ liệu",
+    "không có số liệu",
+    "không có dữ liệu",
+    "không có thông tin",
+    "chưa được ghi nhận",
+    "không được ghi nhận",
+    "không đủ căn cứ",
+    "không đủ bằng chứng",
+)
+
+
+def _states_evidence_absence(report: dict) -> bool:
+    """Whether the report explicitly says the requested evidence is absent."""
+    parts = []
+    answer = report.get("answer")
+    if isinstance(answer, str):
+        parts.append(answer)
+    claims = report.get("claims")
+    if isinstance(claims, list):
+        parts.extend(
+            claim.get("text")
+            for claim in claims
+            if isinstance(claim, dict) and isinstance(claim.get("text"), str)
+        )
+    evidence = " ".join(parts).casefold()
+    return any(marker in evidence for marker in _ABSENCE_MARKERS)
+
+
 class Critic(Middleware):
     """Xoá những gì bằng chứng không đỡ; abstain khi không còn gì."""
 
     name = "critic"
 
     def after_agent(self, ctx, report):
+        states_absence = _states_evidence_absence(report)
         claims = report.get("claims")
         if not isinstance(claims, list) or not claims:
+            if states_absence:
+                report["abstain"] = True
             return report
 
         observed = ctx.observed_text
@@ -135,4 +168,9 @@ class Critic(Middleware):
             report["abstain"] = True
             report["citations"] = []
             report["answer"] = "Không đủ bằng chứng đáng tin cậy để trả lời."
+        elif states_absence:
+            # Evidence of absence is itself a grounded claim. Keep it for
+            # recall/citation credit, but be honest that no requested value
+            # can be supplied.
+            report["abstain"] = True
         return report
