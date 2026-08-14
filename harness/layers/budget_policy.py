@@ -87,11 +87,8 @@ class BudgetPolicy(Middleware):
         self.reserve = max(0, int(reserve))
 
     def _spent(self, ctx) -> bool:
-        # TODO (§3): 2 dòng — "ngân sách đã cạn đến phần dự trữ chưa?"
-        #  limit = ctx.max_tool_calls; None nghĩa là brief không đặt ngân
-        #  sách -> chưa bao giờ cạn. Ngược lại:
-        #  ctx.tools.calls >= limit - self.reserve
-        return False
+        limit = ctx.max_tool_calls
+        return limit is not None and ctx.tools.calls >= limit - self.reserve
 
     def before_model(self, ctx, messages):
         # TODO (§3): khoảng 4-6 dòng.
